@@ -1,6 +1,8 @@
-package main
+package pathutils
 
-import "testing"
+import (
+	"testing"
+)
 
 func Test_packageFromPathAndMod(t *testing.T) {
 	tests := []struct {
@@ -19,7 +21,7 @@ func Test_packageFromPathAndMod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := packageFromPathAndMod(tt.path, tt.mod); got != tt.out {
+			if got := PackageFromPathAndMod(tt.path, tt.mod); got != tt.out {
 				t.Errorf("packageFromPathAndMod() = %v, want %v", got, tt.out)
 			}
 		})

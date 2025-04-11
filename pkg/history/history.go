@@ -1,4 +1,4 @@
-package main
+package history
 
 import (
 	"crypto/md5"
@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MordFustang21/gotest/pkg/colorize"
+	"github.com/MordFustang21/gotest/pkg/pathutils"
 	"github.com/manifoldco/promptui"
+	"github.com/spf13/viper"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -69,7 +72,7 @@ func (h HistoryEntry) Hash() string {
 	return key
 }
 
-func getHistoryFile(file string) *bolt.DB {
+func GetHistoryFile(file string) *bolt.DB {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		panic(err)
@@ -85,7 +88,7 @@ func getHistoryFile(file string) *bolt.DB {
 	return db
 }
 
-func logRunHistory(command exec.Cmd, pass bool) {
+func LogRunHistory(command exec.Cmd, pass bool) error {
 	he := HistoryEntry{
 		Path:          command.Path,
 		Args:          command.Args,
@@ -94,7 +97,7 @@ func logRunHistory(command exec.Cmd, pass bool) {
 		LastRunStatus: pass,
 	}
 
-	file := getHistoryFile(historyFile)
+	file := GetHistoryFile(historyFile)
 	defer file.Close()
 
 	// write the command to the file
@@ -116,12 +119,14 @@ func logRunHistory(command exec.Cmd, pass bool) {
 		return nil
 	})
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("error writing history %w", err)
 	}
+
+	return nil
 }
 
-func selectHistory() (HistoryEntry, error) {
-	file := getHistoryFile(historyFile)
+func SelectHistory() (*HistoryEntry, error) {
+	file := GetHistoryFile(historyFile)
 	defer file.Close()
 
 	var entries []HistoryEntry
@@ -142,7 +147,7 @@ func selectHistory() (HistoryEntry, error) {
 		return nil
 	})
 	if err != nil {
-		return HistoryEntry{}, fmt.Errorf("error retrieving history %w", err)
+		return nil, fmt.Errorf("error retrieving history %w", err)
 	}
 
 	// sort the entries by timestamp
@@ -177,24 +182,25 @@ func selectHistory() (HistoryEntry, error) {
 		fmt.Println("No history selected. Exiting.")
 		os.Exit(0)
 	default:
-		return HistoryEntry{}, fmt.Errorf("error selecting history %w", err)
+		return nil, fmt.Errorf("error selecting history %w", err)
 	}
 
-	return entries[index], nil
+	return &entries[index], nil
 }
 
-func getLastCommand() (HistoryEntry, error) {
-	file := getHistoryFile(historyFile)
+func GetLastCommand() (*HistoryEntry, error) {
+	file := GetHistoryFile(historyFile)
 	defer file.Close()
 
 	// lookup the current module root based on working directory so that
 	// we only run the last test in the current module and not the last global test.
 	wd, err := os.Getwd()
 	if err != nil {
-		return HistoryEntry{}, fmt.Errorf("error getting working directory %w", err)
+		return nil, fmt.Errorf("error getting working directory %w", err)
 	}
 
-	modRoot := lookupModuleRoot(wd)
+	modRoot := pathutils.LookupModuleRoot(wd)
+	fmt.Println(modRoot)
 
 	var lastCommand HistoryEntry
 	err = file.View(func(tx *bolt.Tx) error {
@@ -225,22 +231,30 @@ func getLastCommand() (HistoryEntry, error) {
 		return nil
 	})
 	if err != nil {
-		return HistoryEntry{}, fmt.Errorf("error viewing history file %w", err)
+		return nil, fmt.Errorf("error viewing history file %w", err)
 	}
 
 	if lastCommand.Path == "" {
-		return HistoryEntry{}, errors.New("no runs found for the current module")
+		return nil, errors.New("no runs found for the current module")
 	}
 
-	return lastCommand, nil
+	return &lastCommand, nil
 }
 
-func runHistoryEntry(he HistoryEntry) {
+func RunHistoryEntry(he HistoryEntry) error {
+	// Use viper for colorization config
+	colorEnabled := viper.GetBool("colorizeoutput")
+
 	var outputWriter io.Writer = os.Stdout
-	if globalConfig.ColorizeOutput {
-		var colorReader io.Reader
-		colorReader, outputWriter = io.Pipe()
-		go colorizeOutput(colorReader)
+	var stdErrWriter io.Writer = os.Stderr
+	var pipeR *io.PipeReader
+	var pipeW *io.PipeWriter
+
+	if colorEnabled {
+		// Pipe stdout for colorization
+		pipeR, pipeW = io.Pipe()
+		outputWriter = pipeW                         // Command writes to pipe writer
+		go colorize.ColorizeOutput(pipeR, os.Stdout) // Goroutine reads from pipe reader, writes colorized to real stdout
 	}
 
 	cmd := exec.Cmd{
@@ -248,7 +262,7 @@ func runHistoryEntry(he HistoryEntry) {
 		Args:   he.Args,
 		Dir:    he.Dir,
 		Stdout: outputWriter,
-		Stderr: os.Stderr,
+		Stderr: stdErrWriter,
 	}
 
 	fmt.Println("Running", cmd.Args, "@", cmd.Dir)
@@ -263,8 +277,10 @@ func runHistoryEntry(he HistoryEntry) {
 	case errors.As(err, &exit):
 	// do nothing
 	default:
-		panic(err)
+		return fmt.Errorf("error running command: %w", err)
 	}
 
-	logRunHistory(cmd, pass)
+	LogRunHistory(cmd, pass)
+
+	return nil
 }

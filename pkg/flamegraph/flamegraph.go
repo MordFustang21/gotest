@@ -76,8 +76,7 @@ func profileToRaw(file string) ([]byte, error) {
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if err != nil {
-		fmt.Println("Error starting pprof:", err)
-		return nil, err
+		return nil, fmt.Errorf("error running go tool pprof: %w", err)
 	}
 
 	return raw.Bytes(), nil
@@ -93,8 +92,7 @@ func foldRaw(pprofData []byte) ([]byte, error) {
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if err != nil {
-		fmt.Println("Error starting stackcollapse-go.pl:", err)
-		return nil, err
+		return nil, fmt.Errorf("error running stackcollapse-go.pl: %w", err)
 	}
 
 	return folded.Bytes(), nil

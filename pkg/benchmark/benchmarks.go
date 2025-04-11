@@ -1,23 +1,26 @@
-package main
+package benchmark
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/MordFustang21/gotest/pkg/flamegraph"
+	"github.com/MordFustang21/gotest/pkg/history"
+	"github.com/MordFustang21/gotest/pkg/pathutils"
+	"github.com/MordFustang21/gotest/pkg/testutils"
+	"github.com/spf13/viper"
 	bolt "go.etcd.io/bbolt"
 )
 
-func runBenchmark(t Test) {
-	path, modRoot := testToPathAndRoot(t)
+func RunBenchmark(t testutils.Test) error {
+	path, modRoot, err := pathutils.TestToPathAndModRoot(t)
+	if err != nil {
+		return fmt.Errorf("error getting path to test: %w", err)
+	}
 
 	// create base args with verbose and a run that filters tests so we only run benchmarks
 	args := []string{"test", "-v", path, "-run", "XXX"}
@@ -26,10 +29,10 @@ func runBenchmark(t Test) {
 	}
 
 	var cpuProfile string
-	if *withCPUProfile {
+	if viper.GetBool("cpu") {
 		tempFile, err := os.CreateTemp("", "go-test_"+t.Name)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("error creating CPU profile file: %w", err)
 		}
 
 		cpuProfile = tempFile.Name()
@@ -39,10 +42,10 @@ func runBenchmark(t Test) {
 	}
 
 	var memoryProfile string
-	if *withMemoryProfile {
+	if viper.GetBool("mem") {
 		tempFile, err := os.CreateTemp("", "go-test_"+t.Name)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("error creating memory profile file: %w", err)
 		}
 
 		memoryProfile = tempFile.Name()
@@ -53,7 +56,7 @@ func runBenchmark(t Test) {
 
 	p, err := exec.LookPath("go")
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("error finding go binary: %w", err)
 	}
 
 	// create a buffer to capture the output of the benchmark
@@ -79,15 +82,15 @@ func runBenchmark(t Test) {
 	case errors.Is(err, &exec.ExitError{}):
 	// do nothing
 	default:
-		panic(err)
+		return fmt.Errorf("error running benchmark: %w", err)
 	}
 
-	if *withCPUProfile {
+	if viper.GetBool("cpu") {
 		fmt.Println("Wrote CPU Profile to:", cpuProfile)
 		// Generate the flamegraph
 		svgData, err := flamegraph.GenerateFlamegraph(cpuProfile)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("error generating flamegraph: %w", err)
 		}
 
 		err = flamegraph.ServeFlamegraph(svgData)
@@ -96,55 +99,25 @@ func runBenchmark(t Test) {
 		}
 	}
 
-	if *withMemoryProfile {
+	if viper.GetBool("mem") {
 		fmt.Println("Wrote Memory Profile to:", memoryProfile)
 		cmd := exec.Command("go", "tool", "pprof", "-top", memoryProfile)
 		cmd.Stdout = os.Stdout
 		err = cmd.Run()
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("error running memory profile: %w", err)
 		}
 	}
+
+	return nil
 }
 
 const benchmarkDB = "benchmarks.db"
 
 func storeBenchmarkResult(cmd exec.Cmd, benchBuffer *bytes.Buffer) {
-	db := getHistoryFile(benchmarkDB)
+	db := history.GetHistoryFile(benchmarkDB)
 
 	db.Update(func(tx *bolt.Tx) error {
 		return nil
 	})
-}
-
-func findBenchmarks(path string) []Test {
-	var tests []Test
-
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-	if err != nil {
-		panic(err)
-	}
-
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.FuncDecl:
-			if *verbose {
-				fmt.Println("Evalutating", x.Name.Name)
-			}
-
-			if strings.HasPrefix(x.Name.Name, "Benchmark") {
-				// create entry to run the whole test function
-				tests = append(tests, Test{
-					File:        path,
-					Name:        x.Name.Name,
-					IsBenchmark: true,
-				})
-			}
-		}
-
-		return true
-	})
-
-	return tests
 }

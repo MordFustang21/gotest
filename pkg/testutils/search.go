@@ -1,4 +1,4 @@
-package main
+package testutils
 
 import (
 	"errors"
@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	dbg "runtime/debug"
 	"strings"
+
+	"github.com/manifoldco/promptui"
+	"github.com/spf13/viper"
 )
 
 // Test represents a test case and the file it is in.
@@ -21,7 +24,32 @@ type Test struct {
 	LineNumber  int
 }
 
-func getTestsFromDir(dir string, benchmarks bool) ([]Test, error) {
+func SelectTest(availableTests []Test) (Test, error) {
+	subtestPrompt := promptui.Select{
+		Label: "Select a subtest",
+		Items: availableTests,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ .File }}",
+			Active:   "> {{ .Name }}",
+			Inactive: "  {{ .Name }}",
+			Selected: "{{ .Name }}",
+		},
+		Searcher: func(input string, index int) bool {
+			test := availableTests[index]
+			return strings.Contains(strings.ToLower(test.Name), strings.ToLower(input))
+		},
+	}
+
+	index, _, err := subtestPrompt.Run()
+	switch {
+	case err == nil:
+		return availableTests[index], nil
+	default:
+		return Test{}, fmt.Errorf("error selecting test %w", err)
+	}
+}
+
+func GetTestsFromDir(dir string, benchmarks bool) ([]Test, error) {
 	availableTests := []Test{}
 
 	err := filepath.WalkDir(dir, func(path string, info fs.DirEntry, err error) error {
@@ -40,7 +68,10 @@ func getTestsFromDir(dir string, benchmarks bool) ([]Test, error) {
 
 		// load in AST of the file and find test functions
 		if benchmarks {
-			testFuncs := findBenchmarks(path)
+			testFuncs, err := findBenchmarks(path)
+			if err != nil {
+				return fmt.Errorf("error finding benchmarks in file %s: %w", path, err)
+			}
 			availableTests = append(availableTests, testFuncs...)
 		} else {
 			testFuncs := findTests(path)
@@ -54,6 +85,39 @@ func getTestsFromDir(dir string, benchmarks bool) ([]Test, error) {
 	}
 
 	return availableTests, nil
+}
+
+func findBenchmarks(path string) ([]Test, error) {
+	var tests []Test
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing file %s: %w", path, err)
+	}
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			if viper.GetBool("debug") {
+				fmt.Println("Evalutating", x.Name.Name)
+			}
+
+			if strings.HasPrefix(x.Name.Name, "Benchmark") {
+				// create entry to run the whole test function
+				tests = append(tests, Test{
+					File:        filepath.Base(path),
+					FilePath:    path,
+					Name:        x.Name.Name,
+					IsBenchmark: true,
+				})
+			}
+		}
+
+		return true
+	})
+
+	return tests, nil
 }
 
 // findTests loads the AST of a file and returns all test functions in the file.
@@ -70,7 +134,7 @@ func findTests(path string) []Test {
 		// in the event of a panic catch it and print debug information
 		defer func() {
 			if r := recover(); r != nil {
-				if *verbose {
+				if viper.GetBool("debug") {
 					fmt.Printf("Error in file %s : %s\n%s", path, r, dbg.Stack())
 				}
 			}
@@ -78,7 +142,7 @@ func findTests(path string) []Test {
 
 		switch x := n.(type) {
 		case *ast.FuncDecl:
-			if *verbose {
+			if viper.GetBool("debug") {
 				fmt.Println("Evalutating", x.Name.Name)
 			}
 
@@ -89,7 +153,7 @@ func findTests(path string) []Test {
 
 			// create root test entry
 			tests = append(tests, Test{
-				File:       path,
+				File:       filepath.Base(path),
 				Name:       x.Name.Name,
 				FilePath:   path,
 				LineNumber: fset.Position(x.Pos()).Line,
@@ -103,7 +167,7 @@ func findTests(path string) []Test {
 			// convert subtests into Test entries
 			for _, subtest := range subtests {
 				tests = append(tests, Test{
-					File:       path,
+					File:       filepath.Base(path),
 					Name:       subtest,
 					FilePath:   path,
 					LineNumber: fset.Position(x.Pos()).Line,
@@ -121,7 +185,7 @@ func astToTests(parentTestName string, item ast.Node) []string {
 	defer func() {
 		// don't fail out the whole ast due to one bad test
 		if r := recover(); r != nil {
-			if *verbose {
+			if viper.GetBool("debug") {
 				fmt.Println("Error in astToTests", parentTestName, r)
 			}
 		}
