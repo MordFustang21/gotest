@@ -152,7 +152,7 @@ func executeTests(t testutils.Test, cmd *cobra.Command) (*exec.Cmd, bool, error)
 	debugFlag := viper.GetBool("debug")              // Assumes bound via BindPFlag
 	coverFlag := viper.GetBool("cover")
 	cpuFlag := viper.GetBool("cpu")
-	memFlag := viper.GetBool("mem")
+	memFlag, _ := cmd.Flags().GetBool("mem")
 
 	if verboseFlag {
 		args = append(args, "-v")
